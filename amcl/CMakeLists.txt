@@ -10,6 +10,10 @@ find_package(catkin REQUIRED
 
 find_package(Boost REQUIRED)
 
+find_package(CGAL REQUIRED)
+set(CGAL_DONT_OVERRIDE_CMAKE_FLAGS TRUE CACHE BOOL "Don't override flags")
+include(${CGAL_USE_FILE})
+
 # dynamic reconfigure
 generate_dynamic_reconfigure_options(
     cfg/AMCL.cfg
@@ -25,7 +29,7 @@ catkin_package(
 )
 
 include_directories(include/amcl include/amcl/map include/amcl/sensors include/amcl/pf)
-include_directories(${catkin_INCLUDE_DIRS} ${Boost_INCLUDE_DIRS})
+include_directories(${catkin_INCLUDE_DIRS} ${Boost_INCLUDE_DIRS} ${CGAL_INCLUDE_DIRS})
 
 add_library(amcl_pf
                     src/amcl/pf/pf.c
@@ -57,6 +61,7 @@ target_link_libraries(amcl
     amcl_sensors amcl_map amcl_pf
     ${Boost_LIBRARIES}
     ${catkin_LIBRARIES}
+    ${CGAL_LIBRARIES}
 )
 
 install( TARGETS
