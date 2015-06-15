@@ -809,7 +809,7 @@ pf_vector_t
 AmclNode::polygonPoseGenerator(geometry_msgs::PolygonStamped& poly)
 {
   pf_vector_t p;
-  CGAL_Point *points[poly.polygon.points.size()];
+  CGAL_Point points[poly.polygon.points.size()];
   double min_x = DBL_MAX;
   double max_x = -DBL_MAX;
   double min_y = DBL_MAX;
@@ -826,7 +826,7 @@ AmclNode::polygonPoseGenerator(geometry_msgs::PolygonStamped& poly)
     if(y < min_y) min_y = y;
     if(y > max_y) max_y = y;
 
-    points[px] = new CGAL_Point(x, y);
+    points[px] = CGAL_Point(x, y);
 
   }
 
@@ -835,23 +835,19 @@ AmclNode::polygonPoseGenerator(geometry_msgs::PolygonStamped& poly)
     p.v[0] = min_x + drand48() * (max_x - min_x);
     p.v[1] = min_y + drand48() * (max_y - min_y);
     p.v[2] = drand48() * 2 * M_PI - M_PI;
-    // Check that it's a free cell
-    int i,j;
-    // i = MAP_GXWX(map, p.v[0]);
-    // j = MAP_GYWY(map, p.v[1]);
-    // if(MAP_VALID(map,i,j) && (map->cells[MAP_INDEX(map,i,j)].occ_state == -1)
-      // && CGAL::bounded_side_2(&points[0], &points[0]+points.size(), CGAL_KERNEL())
-    // )
-    if(CGAL::bounded_side_2(
-      points[0],
-      points[0]+poly.polygon.points.size(),
+
+    // Check that it's inside the polygon
+    int cond = CGAL::bounded_side_2(
+      points,
+      points+poly.polygon.points.size(),
       CGAL_Point(p.v[0], p.v[1]),
-      CGAL_KERNEL()))
+      CGAL_KERNEL());
+
+    if((cond == CGAL::ON_BOUNDED_SIDE) || (cond == CGAL::ON_BOUNDARY))
     {
       break;
     }
   }
-  ROS_INFO("%f, %f", p.v[0], p.v[1]);
   return p;
 }
 
@@ -887,7 +883,7 @@ AmclNode::polygonLocalizationCallback(nav_msgs::GlobalLocalizationPolygon::Reque
   {
     ROS_ERROR("Couldn't transform from %s to %s, "
               "even though the message notifier is in use",
-              "foo", "bar");
+              req.poly.header.frame_id.c_str(), global_frame_id_.c_str());
     return false;
   }
 
