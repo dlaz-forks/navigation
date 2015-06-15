@@ -43,8 +43,12 @@
 #include "geometry_msgs/PoseWithCovarianceStamped.h"
 #include "geometry_msgs/PoseArray.h"
 #include "geometry_msgs/Pose.h"
+#include "geometry_msgs/PointStamped.h"
+#include "geometry_msgs/Point.h"
+#include "geometry_msgs/PolygonStamped.h"
 #include "nav_msgs/GetMap.h"
 #include "std_srvs/Empty.h"
+#include "nav_msgs/GlobalLocalizationPolygon.h"
 
 // For transform support
 #include "tf/transform_broadcaster.h"
@@ -57,9 +61,16 @@
 #include "dynamic_reconfigure/server.h"
 #include "amcl/AMCLConfig.h"
 
+// CGAL
+#include <CGAL/Exact_predicates_inexact_constructions_kernel.h>
+#include <CGAL/Polygon_2_algorithms.h>
+
 #define NEW_UNIFORM_SAMPLING 1
 
 using namespace amcl;
+
+typedef CGAL::Exact_predicates_inexact_constructions_kernel CGAL_KERNEL;
+typedef CGAL_KERNEL::Point_2 CGAL_Point;
 
 // Pose hypothesis
 typedef struct
@@ -118,12 +129,16 @@ class AmclNode
     // Pose-generating function used to uniformly distribute particles over
     // the map
     static pf_vector_t uniformPoseGenerator(void* arg);
+    static pf_vector_t polygonPoseGenerator(geometry_msgs::PolygonStamped& poly);
+
 #if NEW_UNIFORM_SAMPLING
     static std::vector<std::pair<int,int> > free_space_indices;
 #endif
     // Callbacks
     bool globalLocalizationCallback(std_srvs::Empty::Request& req,
                                     std_srvs::Empty::Response& res);
+    bool polygonLocalizationCallback(nav_msgs::GlobalLocalizationPolygon::Request& req,
+                                    nav_msgs::GlobalLocalizationPolygon::Response& res);
     bool nomotionUpdateCallback(std_srvs::Empty::Request& req,
                                     std_srvs::Empty::Response& res);
 
@@ -202,6 +217,7 @@ class AmclNode
     ros::Publisher pose_pub_;
     ros::Publisher particlecloud_pub_;
     ros::ServiceServer global_loc_srv_;
+    ros::ServiceServer polygon_loc_srv_;
     ros::ServiceServer nomotion_update_srv_; //to let amcl update samples without requiring motion
     ros::Subscriber initial_pose_sub_old_;
     ros::Subscriber map_sub_;
@@ -361,6 +377,9 @@ AmclNode::AmclNode() :
   global_loc_srv_ = nh_.advertiseService("global_localization", 
 					 &AmclNode::globalLocalizationCallback,
                                          this);
+  polygon_loc_srv_ = nh_.advertiseService("polygon_localization",
+           &AmclNode::polygonLocalizationCallback,
+                                this);
   nomotion_update_srv_= nh_.advertiseService("request_nomotion_update", &AmclNode::nomotionUpdateCallback, this);
 
   laser_scan_sub_ = new message_filters::Subscriber<sensor_msgs::LaserScan>(nh_, scan_topic_, 100);
@@ -786,6 +805,98 @@ AmclNode::getOdomPose(tf::Stamped<tf::Pose>& odom_pose,
   return true;
 }
 
+pf_vector_t
+AmclNode::polygonPoseGenerator(geometry_msgs::PolygonStamped& poly)
+{
+  pf_vector_t p;
+  CGAL_Point *points[poly.polygon.points.size()];
+  double min_x = DBL_MAX;
+  double max_x = -DBL_MAX;
+  double min_y = DBL_MAX;
+  double max_y = -DBL_MAX;
+
+  // load polygon into a vector and find the min and max coords
+  for(int px=0; px<poly.polygon.points.size(); px++)
+  {
+    double x = poly.polygon.points[px].x;
+    double y = poly.polygon.points[px].y;
+
+    if(x < min_x) min_x = x;
+    if(x > max_x) max_x = x;
+    if(y < min_y) min_y = y;
+    if(y > max_y) max_y = y;
+
+    points[px] = new CGAL_Point(x, y);
+
+  }
+
+  for(;;)
+  {
+    p.v[0] = min_x + drand48() * (max_x - min_x);
+    p.v[1] = min_y + drand48() * (max_y - min_y);
+    p.v[2] = drand48() * 2 * M_PI - M_PI;
+    // Check that it's a free cell
+    int i,j;
+    // i = MAP_GXWX(map, p.v[0]);
+    // j = MAP_GYWY(map, p.v[1]);
+    // if(MAP_VALID(map,i,j) && (map->cells[MAP_INDEX(map,i,j)].occ_state == -1)
+      // && CGAL::bounded_side_2(&points[0], &points[0]+points.size(), CGAL_KERNEL())
+    // )
+    if(CGAL::bounded_side_2(
+      points[0],
+      points[0]+poly.polygon.points.size(),
+      CGAL_Point(p.v[0], p.v[1]),
+      CGAL_KERNEL()))
+    {
+      break;
+    }
+  }
+  ROS_INFO("%f, %f", p.v[0], p.v[1]);
+  return p;
+}
+
+bool
+AmclNode::polygonLocalizationCallback(nav_msgs::GlobalLocalizationPolygon::Request& req,
+                                     nav_msgs::GlobalLocalizationPolygon::Response& res)
+{
+  if( map_ == NULL ) {
+    return true;
+  }
+  boost::recursive_mutex::scoped_lock gl(configuration_mutex_);
+  ROS_INFO("Initializing with uniform distribution inside polygon");
+
+  try
+  {
+    // this->tf_->transformPose(base_frame_id_, ident, laser_pose);
+    // std::vector points<geometry_msgs::Point>;
+    for(int px=0; px<req.poly.polygon.points.size(); px++) {
+      geometry_msgs::PointStamped pt_stamped;
+      pt_stamped.header = req.poly.header;
+      pt_stamped.point.x = req.poly.polygon.points[px].x;
+      pt_stamped.point.y = req.poly.polygon.points[px].y;
+      pt_stamped.point.z = req.poly.polygon.points[px].z;
+
+      this->tf_->transformPoint(global_frame_id_, pt_stamped, pt_stamped);
+      // points.push_back(pt_stamped.point);
+      req.poly.polygon.points[px].x = pt_stamped.point.x;
+      req.poly.polygon.points[px].y = pt_stamped.point.y;
+      req.poly.polygon.points[px].z = pt_stamped.point.z;
+    }
+  }
+  catch(tf::TransformException& e)
+  {
+    ROS_ERROR("Couldn't transform from %s to %s, "
+              "even though the message notifier is in use",
+              "foo", "bar");
+    return false;
+  }
+
+  pf_init_model(pf_, (pf_init_model_fn_t)AmclNode::polygonPoseGenerator,
+                &req.poly);
+  ROS_INFO("Polygon initialisation done!");
+  pf_init_ = false;
+  return true;
+}
 
 pf_vector_t
 AmclNode::uniformPoseGenerator(void* arg)
